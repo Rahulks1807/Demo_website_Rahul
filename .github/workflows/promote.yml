@@ -152,20 +152,21 @@ jobs:
       - name: Open PR via GitHub API
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           script: |
-            const head = `${{ needs.create-promo-branch.outputs.BRANCH }}`;
+            const head = `promote/${{ needs.prepare.outputs.TAG }}-to-${{ needs.prepare.outputs.TARGET }}`;
             const base = `${{ needs.prepare.outputs.TARGET }}`;
             const title = `Promote ${{ needs.prepare.outputs.TAG }} → ${{ needs.prepare.outputs.TARGET }}`;
             const body = `Promotion PR for **${{ needs.prepare.outputs.TAG }}**.
             Source (predecessor): \`${{ needs.prepare.outputs.SOURCE }}\`
             Target: \`${{ needs.prepare.outputs.TARGET }}\``;
-
+      
             try {
               const { data: pr } = await github.rest.pulls.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                head, // e.g. "promote/0.0.4-to-release/uat"
-                base, // e.g. "release/uat"
+                head,
+                base,
                 title,
                 body,
                 maintainer_can_modify: true,
@@ -173,21 +174,8 @@ jobs:
               });
               core.info(`PR created: ${pr.html_url}`);
             } catch (e) {
-              // 422 Unprocessable Entity usually means a PR already exists or no diff
               if (e.status === 422) {
-                core.info('PR might already exist or no diff. Searching for an existing open PR...');
-                const { data: prs } = await github.rest.pulls.list({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  state: 'open',
-                  head: `${context.repo.owner}:${head}`,
-                  base
-                });
-                if (prs.length > 0) {
-                  core.info(`Existing PR: ${prs[0].html_url}`);
-                } else {
-                  core.setFailed(`Could not create or find PR. Details: ${e.message}`);
-                }
+                core.info('PR already exists or no diff.');
               } else {
                 core.setFailed(`PR create failed: ${e.message}`);
               }
