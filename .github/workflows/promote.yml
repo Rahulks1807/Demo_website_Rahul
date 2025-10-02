@@ -123,24 +123,19 @@ jobs:
           echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
 
       # ✅ NEW: stamp a harmless metadata file so there's always a diff
-     # - name: Stamp promotion metadata
-     #  shell: bash
-     #   run: |
-     #     TAG="${{ needs.prepare.outputs.TAG }}"
-     #     SRC="${{ needs.prepare.outputs.SOURCE }}"
-    #      TGT="${{ needs.prepare.outputs.TARGET }}"
-    #      mkdir -p release-metadata
-     #     printf '{"tag":"%s","source":"%s","target":"%s","timestamp":"%s"}\n' \
-      #      "$TAG" "$SRC" "$TGT" "$(date -u +%FT%TZ)" > release-metadata/promotion.json
-     #     git add release-metadata/promotion.json
-     #     git commit -m "chore(release): promotion metadata for $TAG → $TGT"
-     #     git push -u origin "$(git branch --show-current)"
-      - name: Create empty promotion commit
+      - name: Stamp promotion metadata
+        shell: bash
         run: |
           TAG="${{ needs.prepare.outputs.TAG }}"
+          SRC="${{ needs.prepare.outputs.SOURCE }}"
           TGT="${{ needs.prepare.outputs.TARGET }}"
-          git commit --allow-empty -m "chore(release): promote $TAG → $TGT"
+          mkdir -p release-metadata
+          printf '{"tag":"%s","source":"%s","target":"%s","timestamp":"%s"}\n' \
+            "$TAG" "$SRC" "$TGT" "$(date -u +%FT%TZ)" > release-metadata/promotion.json
+          git add release-metadata/promotion.json
+          git commit -m "chore(release): promotion metadata for $TAG → $TGT"
           git push -u origin "$(git branch --show-current)"
+      
 
   open-pr:
     runs-on: ubuntu-latest
