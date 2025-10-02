@@ -106,10 +106,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+
       - name: Configure git author
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Create branch from tag
         id: mk
         shell: bash
@@ -118,8 +120,21 @@ jobs:
           TGT="${{ needs.prepare.outputs.TARGET }}"
           PROMO_BRANCH="promote/${TAG}-to-${TGT}"
           git checkout -b "$PROMO_BRANCH" "refs/tags/$TAG"
-          git push -u origin "$PROMO_BRANCH"
           echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
+
+      # ✅ NEW: stamp a harmless metadata file so there's always a diff
+      - name: Stamp promotion metadata
+        shell: bash
+        run: |
+          TAG="${{ needs.prepare.outputs.TAG }}"
+          SRC="${{ needs.prepare.outputs.SOURCE }}"
+          TGT="${{ needs.prepare.outputs.TARGET }}"
+          mkdir -p .release
+          printf '{"tag":"%s","source":"%s","target":"%s","timestamp":"%s"}\n' \
+            "$TAG" "$SRC" "$TGT" "$(date -u +%FT%TZ)" > .release/promotion.json
+          git add .release/promotion.json
+          git commit -m "chore(release): promotion metadata for $TAG → $TGT"
+          git push -u origin "$(git branch --show-current)"
 
   open-pr:
     runs-on: ubuntu-latest
