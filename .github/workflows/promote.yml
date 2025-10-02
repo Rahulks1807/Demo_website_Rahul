@@ -122,19 +122,20 @@ jobs:
           git checkout -b "$PROMO_BRANCH" "refs/tags/$TAG"
           echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
 
-      # ✅ NEW: stamp a harmless metadata file so there's always a diff
-      - name: Stamp promotion metadata
+      # ✅ NEW: committing on top of the tag (which includes workflows)
+      - name: Create dummy tree for promotion branch
         shell: bash
         run: |
           TAG="${{ needs.prepare.outputs.TAG }}"
-          SRC="${{ needs.prepare.outputs.SOURCE }}"
           TGT="${{ needs.prepare.outputs.TARGET }}"
-          mkdir -p release-metadata
-          printf '{"tag":"%s","source":"%s","target":"%s","timestamp":"%s"}\n' \
-            "$TAG" "$SRC" "$TGT" "$(date -u +%FT%TZ)" > release-metadata/promotion.json
-          git add release-metadata/promotion.json
-          git commit -m "chore(release): promotion metadata for $TAG → $TGT"
-          git push -u origin "$(git branch --show-current)"
+          BRANCH="$(git branch --show-current)"
+
+          # Make branch empty so no workflows included
+          git rm -rf . >/dev/null 2>&1 || true
+          echo "Promotion: $TAG → $TGT at $(date -u +%FT%TZ)" > PROMOTION_INFO.txt
+          git add PROMOTION_INFO.txt
+          git commit -m "chore(release): promote $TAG → $TGT"
+          git push -u origin "$BRANCH" --force
       
 
   open-pr:
