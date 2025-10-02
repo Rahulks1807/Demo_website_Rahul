@@ -114,4 +114,4 @@ jobs:
         run: |
           echo "📌 Created tag: ${{ steps.next.outputs.next }}"
           echo "🔧 Bump type: ${{ steps.bump.outputs.choice }}"
-          ech
+          echo "🔎 Commit range: ${{ steps.bump.outputs.range }}"
