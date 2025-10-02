@@ -141,25 +141,55 @@ jobs:
   open-pr:
     runs-on: ubuntu-latest
     needs: [prepare, create-promo-branch]
+    permissions:
+      pull-requests: write
+      contents: read
     steps:
-      # ✅ Ensure we're inside a git repo
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ✅ Create (or update) the PR from the already-pushed promotion branch
-      - uses: peter-evans/create-pull-request@v6
+      - name: Open PR via GitHub API
+        uses: actions/github-script@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Use the branch we pushed in the previous job as the PR head
-          branch: ${{ needs.create-promo-branch.outputs.BRANCH }}
-          # Target environment branch as PR base
-          base: ${{ needs.prepare.outputs.TARGET }}
-          title: "Promote ${{ needs.prepare.outputs.TAG }} → ${{ needs.prepare.outputs.TARGET }}"
-          body: |
-            Promotion PR for **${{ needs.prepare.outputs.TAG }}**.
-            Source (predecessor): `${{ needs.prepare.outputs.SOURCE }}`
-            Target: `${{ needs.prepare.outputs.TARGET }}`
-          labels: release-promotion
-          draft: false
+          script: |
+            const head = `${{ needs.create-promo-branch.outputs.BRANCH }}`;
+            const base = `${{ needs.prepare.outputs.TARGET }}`;
+            const title = `Promote ${{ needs.prepare.outputs.TAG }} → ${{ needs.prepare.outputs.TARGET }}`;
+            const body = `Promotion PR for **${{ needs.prepare.outputs.TAG }}**.
+            Source (predecessor): \`${{ needs.prepare.outputs.SOURCE }}\`
+            Target: \`${{ needs.prepare.outputs.TARGET }}\``;
+
+            try {
+              const { data: pr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head, // e.g. "promote/0.0.4-to-release/uat"
+                base, // e.g. "release/uat"
+                title,
+                body,
+                maintainer_can_modify: true,
+                draft: false
+              });
+              core.info(`PR created: ${pr.html_url}`);
+            } catch (e) {
+              // 422 Unprocessable Entity usually means a PR already exists or no diff
+              if (e.status === 422) {
+                core.info('PR might already exist or no diff. Searching for an existing open PR...');
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  head: `${context.repo.owner}:${head}`,
+                  base
+                });
+                if (prs.length > 0) {
+                  core.info(`Existing PR: ${prs[0].html_url}`);
+                } else {
+                  core.setFailed(`Could not create or find PR. Details: ${e.message}`);
+                }
+              } else {
+                core.setFailed(`PR create failed: ${e.message}`);
+              }
+            }
 
