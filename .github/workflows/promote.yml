@@ -129,8 +129,7 @@ jobs:
           TAG="${{ needs.prepare.outputs.TAG }}"
           TGT="${{ needs.prepare.outputs.TARGET }}"
           BRANCH="$(git branch --show-current)"
-
-          # Make branch empty so no workflows included
+          # Make branch content minimal so it doesn't include `.github/workflows/*`
           git rm -rf . >/dev/null 2>&1 || true
           echo "Promotion: $TAG → $TGT at $(date -u +%FT%TZ)" > PROMOTION_INFO.txt
           git add PROMOTION_INFO.txt
@@ -142,42 +141,47 @@ jobs:
     runs-on: ubuntu-latest
     needs: [prepare, create-promo-branch]
     permissions:
-      pull-requests: write
       contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Open PR via GitHub API
+      - name: Open PR via GitHub API (with PAT)
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          github-token: ${{ secrets.PAT_REPO }}
           script: |
-            const head = `promote/${{ needs.prepare.outputs.TAG }}-to-${{ needs.prepare.outputs.TARGET }}`;
-            const base = `${{ needs.prepare.outputs.TARGET }}`;
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const head  = `${owner}:${{ needs.create-promo-branch.outputs.BRANCH }}`; // owner:branch format
+            const base  = `${{ needs.prepare.outputs.TARGET }}`;
             const title = `Promote ${{ needs.prepare.outputs.TAG }} → ${{ needs.prepare.outputs.TARGET }}`;
-            const body = `Promotion PR for **${{ needs.prepare.outputs.TAG }}**.
+            const body  = `Promotion PR for **${{ needs.prepare.outputs.TAG }}**.
             Source (predecessor): \`${{ needs.prepare.outputs.SOURCE }}\`
             Target: \`${{ needs.prepare.outputs.TARGET }}\``;
-      
+
             try {
               const { data: pr } = await github.rest.pulls.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                head,
-                base,
-                title,
-                body,
-                maintainer_can_modify: true,
-                draft: false
+                owner, repo, head, base, title, body,
+                maintainer_can_modify: true, draft: false
               });
               core.info(`PR created: ${pr.html_url}`);
             } catch (e) {
               if (e.status === 422) {
-                core.info('PR already exists or no diff.');
+                // Could be "already exists" or "no diff"; try to find it
+                const { data: prs } = await github.rest.pulls.list({
+                  owner, repo, state: 'open', head, base
+                });
+                if (prs.length > 0) {
+                  core.info(`Existing PR: ${prs[0].html_url}`);
+                } else {
+                  core.setFailed(`Could not create or find PR. Details: ${e.message}`);
+                }
               } else {
                 core.setFailed(`PR create failed: ${e.message}`);
               }
             }
+
 
