@@ -43,7 +43,7 @@ jobs:
         run: echo "Deployment approved! Proceeding..."
 
   deploy:
-    needs: build
+    needs: approve-deployment  # Changed from 'build' to 'approve-deployment'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
