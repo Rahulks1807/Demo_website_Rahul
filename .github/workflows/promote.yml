@@ -112,30 +112,46 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Create branch from tag
+      # ✅ Create the promo branch FROM THE TARGET BRANCH (not from the tag)
+      - name: Create promo branch from target
         id: mk
         shell: bash
         run: |
-          TAG="${{ needs.prepare.outputs.TAG }}"
           TGT="${{ needs.prepare.outputs.TARGET }}"
+          TAG="${{ needs.prepare.outputs.TAG }}"
+          SHA="${{ needs.prepare.outputs.SHA }}"
           PROMO_BRANCH="promote/${TAG}-to-${TGT}"
-          git checkout -b "$PROMO_BRANCH" "refs/tags/$TAG"
+
+          # Make sure we have the latest remote refs
+          git fetch --all --tags
+
+          # Create branch from the target branch tip
+          git checkout -B "$PROMO_BRANCH" "origin/$TGT"
+
           echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
 
-      # ✅ NEW: committing on top of the tag (which includes workflows)
-      - name: Create dummy tree for promotion branch
-        shell: bash
-        run: |
-          TAG="${{ needs.prepare.outputs.TAG }}"
-          TGT="${{ needs.prepare.outputs.TARGET }}"
-          BRANCH="$(git branch --show-current)"
-          # Make branch content minimal so it doesn't include `.github/workflows/*`
-          git rm -rf . >/dev/null 2>&1 || true
-          echo "Promotion: $TAG → $TGT at $(date -u +%FT%TZ)" > PROMOTION_INFO.txt
-          git add PROMOTION_INFO.txt
-          git commit -m "chore(release): promote $TAG → $TGT"
-          git push -u origin "$BRANCH" --force
-      
+          # Try to merge the tag commit into the promo branch
+          set +e
+          git merge --no-ff "$SHA" -m "Promote $TAG into $TGT"
+          MERGE_STATUS=$?
+          set -e
+
+          if [ $MERGE_STATUS -eq 0 ]; then
+            echo "Merged tag $TAG into $TGT on $PROMO_BRANCH"
+          else
+            # If already up-to-date or fast-forward not needed, check if ancestor
+            if git merge-base --is-ancestor "$SHA" "$PROMO_BRANCH"; then
+              echo "Target already contains $TAG; creating a no-op promotion commit to open PR."
+              git commit --allow-empty -m "chore(release): no-op promotion of $TAG into $TGT"
+            else
+              echo "Merge conflict or unexpected failure while merging $TAG into $TGT."
+              echo "Please reconcile manually." >&2
+              exit 1
+            fi
+          fi
+
+          # Push the promo branch
+          git push -u origin "$PROMO_BRANCH"
 
   open-pr:
     runs-on: ubuntu-latest
