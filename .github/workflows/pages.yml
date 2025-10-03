@@ -32,6 +32,16 @@ jobs:
         with:
           path: ./
 
+  # ✅ NEW: Manual approval gate
+  approve-deployment:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pages-approval  # This triggers the approval requirement
+    steps:
+      - name: Waiting for approval
+        run: echo "Deployment approved! Proceeding..."
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
