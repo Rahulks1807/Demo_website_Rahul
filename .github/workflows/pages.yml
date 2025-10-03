@@ -3,7 +3,6 @@ name: pages build and deployment
 on:
   push:
     branches:
-      - develop
       - release/**
   workflow_dispatch:
 
