@@ -1,0 +1,117 @@
+name: Create Tag from develop (Auto SemVer)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (auto/patch/minor/major)"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags --force
+
+      - name: Find latest SemVer tag reachable from develop
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          if BASE=$(git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' --abbrev=0 2>/dev/null); then
+            echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decide bump (Conventional Commits) or override
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT="${{ github.event.inputs.bump }}"
+          BASE="${{ steps.base.outputs.base }}"
+
+          if [[ "$BASE" == "0.0.0" ]]; then
+            RANGE="$(git rev-list --max-parents=0 HEAD | tail -n1)..HEAD"
+          else
+            RANGE="$BASE..HEAD"
+          fi
+
+          COMMITS="$(git log --pretty=format:'%s%n%b%x00' $RANGE || true)"
+
+          if [[ "$INPUT" != "auto" ]]; then
+            CHOICE="$INPUT"
+          else
+            if [[ -z "$COMMITS" ]]; then
+              echo "No new commits since $BASE; refusing duplicate version." >&2
+              exit 1
+            fi
+            if echo "$COMMITS" | tr '\000' '\n' | grep -Eiq '(^|[[:space:]])BREAKING(\ |-)CHANGE(:|!)'; then
+              CHOICE=major
+            elif echo "$COMMITS" | tr '\000' '\n' | grep -Eq '^[a-zA-Z]+(\(.*\))?!:'; then
+              CHOICE=major
+            elif echo "$COMMITS" | tr '\000' '\n' | grep -Eq '^feat(\(.*\))?:'; then
+              CHOICE=minor
+            else
+              CHOICE=patch
+            fi
+          fi
+
+          echo "choice=$CHOICE" >> "$GITHUB_OUTPUT"
+          echo "range=$RANGE"   >> "$GITHUB_OUTPUT"
+
+      - name: Compute next SemVer
+        id: next
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.base.outputs.base }}"
+          BUMP="${{ steps.bump.outputs.choice }}"
+          if [[ ! "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Base '$BASE' is not SemVer (MAJOR.MINOR.PATCH)"; exit 1
+          fi
+          IFS='.' read -r MA MI PA <<< "$BASE"
+          case "$BUMP" in
+            major) MA=$((MA+1)); MI=0; PA=0 ;;
+            minor) MI=$((MI+1)); PA=0 ;;
+            patch) PA=$((PA+1)) ;;
+            *) echo "Unknown bump '$BUMP'"; exit 1 ;;
+          esac
+          NEXT="${MA}.${MI}.${PA}"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git author
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push annotated tag
+        shell: bash
+        run: |
+          TAG="${{ steps.next.outputs.next }}"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists: $TAG" >&2; exit 1
+          fi
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "Created tag $TAG"
+
+      - name: Summary
+        run: |
+          echo "📌 Created tag: ${{ steps.next.outputs.next }}"
+          echo "🔧 Bump type: ${{ steps.bump.outputs.choice }}"
+          echo "🔎 Commit range: ${{ steps.bump.outputs.range }}"
