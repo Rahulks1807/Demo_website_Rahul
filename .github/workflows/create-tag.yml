@@ -1,21 +1,21 @@
-name: Create Tag from develop (Auto SemVer)
+name: Auto Create Tag on PR Merge to develop
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: "Version bump (auto/patch/minor/major)"
-        type: choice
-        options: [auto, patch, minor, major]
-        default: auto
-        required: true
+  pull_request:
+    types:
+      - closed
+    branches:
+      - develop
 
 permissions:
   contents: write
 
 jobs:
-  validate-and-tag:
+  auto-tag:
+    # Only run if PR was merged (not just closed)
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout develop (full history)
         uses: actions/checkout@v4
@@ -37,42 +37,36 @@ jobs:
             echo "base=0.0.0" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Decide bump (Conventional Commits) or override
+      - name: Analyze PR title to determine bump type
         id: bump
         shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          INPUT="${{ github.event.inputs.bump }}"
-          BASE="${{ steps.base.outputs.base }}"
-
-          if [[ "$BASE" == "0.0.0" ]]; then
-            RANGE="$(git rev-list --max-parents=0 HEAD | tail -n1)..HEAD"
+          
+          echo "📋 PR Title: $PR_TITLE"
+          
+          # Check for BREAKING CHANGE indicators
+          if echo "$PR_TITLE" | grep -Eiq '(^|[[:space:]])BREAKING(\ |-)CHANGE'; then
+            CHOICE=major
+          elif echo "$PR_TITLE" | grep -Eq '^[a-zA-Z]+(\(.*\))?!:'; then
+            # Examples: feat!:, fix!:, chore(api)!:
+            CHOICE=major
+          elif echo "$PR_TITLE" | grep -Eiq '^feat(\(.*\))?:'; then
+            # Examples: feat:, feat(auth):
+            CHOICE=minor
+          elif echo "$PR_TITLE" | grep -Eiq '^(fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\(.*\))?:'; then
+            # Standard conventional commit types
+            CHOICE=patch
           else
-            RANGE="$BASE..HEAD"
+            # Default to patch if no conventional commit format detected
+            echo "⚠️ PR title doesn't follow Conventional Commits format. Defaulting to patch."
+            CHOICE=patch
           fi
-
-          COMMITS="$(git log --pretty=format:'%s%n%b%x00' $RANGE || true)"
-
-          if [[ "$INPUT" != "auto" ]]; then
-            CHOICE="$INPUT"
-          else
-            if [[ -z "$COMMITS" ]]; then
-              echo "No new commits since $BASE; refusing duplicate version." >&2
-              exit 1
-            fi
-            if echo "$COMMITS" | tr '\000' '\n' | grep -Eiq '(^|[[:space:]])BREAKING(\ |-)CHANGE(:|!)'; then
-              CHOICE=major
-            elif echo "$COMMITS" | tr '\000' '\n' | grep -Eq '^[a-zA-Z]+(\(.*\))?!:'; then
-              CHOICE=major
-            elif echo "$COMMITS" | tr '\000' '\n' | grep -Eq '^feat(\(.*\))?:'; then
-              CHOICE=minor
-            else
-              CHOICE=patch
-            fi
-          fi
-
+          
           echo "choice=$CHOICE" >> "$GITHUB_OUTPUT"
-          echo "range=$RANGE"   >> "$GITHUB_OUTPUT"
+          echo "🔧 Bump type determined: $CHOICE"
 
       - name: Compute next SemVer
         id: next
@@ -81,18 +75,23 @@ jobs:
           set -euo pipefail
           BASE="${{ steps.base.outputs.base }}"
           BUMP="${{ steps.bump.outputs.choice }}"
+          
           if [[ ! "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Base '$BASE' is not SemVer (MAJOR.MINOR.PATCH)"; exit 1
           fi
+          
           IFS='.' read -r MA MI PA <<< "$BASE"
+          
           case "$BUMP" in
             major) MA=$((MA+1)); MI=0; PA=0 ;;
             minor) MI=$((MI+1)); PA=0 ;;
             patch) PA=$((PA+1)) ;;
             *) echo "Unknown bump '$BUMP'"; exit 1 ;;
           esac
+          
           NEXT="${MA}.${MI}.${PA}"
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "📌 Next version: $NEXT (from $BASE)"
 
       - name: Configure git author
         run: |
@@ -103,15 +102,48 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.next.outputs.next }}"
+          
           if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag already exists: $TAG" >&2; exit 1
+            echo "⚠️ Tag already exists: $TAG"
+            echo "This might happen if multiple PRs are merged rapidly."
+            exit 0  # Exit gracefully instead of failing
           fi
-          git tag -a "$TAG" -m "Release $TAG"
+          
+          git tag -a "$TAG" -m "Release $TAG
+
+          Triggered by PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}
+          Merged by: @${{ github.event.pull_request.merged_by.login }}"
+          
           git push origin "$TAG"
-          echo "Created tag $TAG"
+          echo "✅ Created and pushed tag: $TAG"
+
+      - name: Comment on PR with tag info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.next.outputs.next }}';
+            const bumpType = '${{ steps.bump.outputs.choice }}';
+            const baseTag = '${{ steps.base.outputs.base }}';
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `🏷️ **Tag Created:** \`${tag}\`
+              
+              - **Previous version:** \`${baseTag}\`
+              - **Bump type:** \`${bumpType}\`
+              - **PR title:** ${context.payload.pull_request.title}
+              
+              You can now promote this release using the [Promote Release workflow](../../actions/workflows/promote-release.yml).`
+            });
 
       - name: Summary
         run: |
-          echo "📌 Created tag: ${{ steps.next.outputs.next }}"
-          echo "🔧 Bump type: ${{ steps.bump.outputs.choice }}"
-          echo "🔎 Commit range: ${{ steps.bump.outputs.range }}"
+          echo "# 🎉 Tag Creation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag created:** \`${{ steps.next.outputs.next }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Previous tag:** \`${{ steps.base.outputs.base }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Bump type:** \`${{ steps.bump.outputs.choice }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR:** #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Merged by:** @${{ github.event.pull_request.merged_by.login }}" >> $GITHUB_STEP_SUMMARY
