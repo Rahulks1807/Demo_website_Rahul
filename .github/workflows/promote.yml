@@ -11,6 +11,11 @@ on:
         type: choice
         options: [uat, psup, prod]
         required: true
+      force_reset:
+        description: "Force reset target branch if diverged (DANGEROUS)"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: write
@@ -95,6 +100,7 @@ jobs:
         run: |
           TGT="${{ needs.prepare.outputs.TARGET }}"
           SHA="${{ needs.prepare.outputs.SHA }}"
+          FORCE="${{ github.event.inputs.force_reset }}"
           
           # Check if target branch exists
           if ! git rev-parse --verify "origin/$TGT" >/dev/null 2>&1; then
@@ -116,14 +122,21 @@ jobs:
           fi
           
           # If we get here, branches have diverged
+          if [[ "$FORCE" == "true" ]]; then
+            echo "⚠️ Target branch '$TGT' has diverged, but force_reset is enabled"
+            echo "Target will be RESET to tag (existing commits will be lost)"
+            exit 0
+          fi
+          
           echo "❌ Target branch '$TGT' has diverged from tag history!" >&2
           echo "" >&2
           echo "Target branch contains commits not in the tag." >&2
           echo "Release branches should only contain promoted tags." >&2
           echo "" >&2
           echo "To fix this, you can:" >&2
-          echo "1. Reset '$TGT' to a previous valid state, OR" >&2
+          echo "1. Reset '$TGT' manually: git reset --hard refs/tags/${{ needs.prepare.outputs.TAG }} && git push --force" >&2
           echo "2. Create a new tag that includes the divergent commits" >&2
+          echo "3. Re-run this workflow with 'force_reset' enabled (DANGEROUS)" >&2
           exit 1
 
   ensure-target:
@@ -134,17 +147,29 @@ jobs:
         with: { fetch-depth: 0 }
       - run: git fetch --all --tags
       
-      - name: Create target from tag if missing
+      - name: Create target from tag if missing (or force reset if diverged)
         shell: bash
         run: |
           TGT="${{ needs.prepare.outputs.TARGET }}"
           SHA="${{ needs.prepare.outputs.SHA }}"
+          FORCE="${{ github.event.inputs.force_reset }}"
           
           if ! git rev-parse --verify "origin/$TGT" >/dev/null 2>&1; then
             echo "Creating $TGT from tag SHA"
             git checkout -b "$TGT" "$SHA"
             git push -u origin "$TGT"
             echo "✅ Created '$TGT' pointing to tag"
+          elif [[ "$FORCE" == "true" ]]; then
+            # Check if force reset is needed (branch has diverged)
+            if ! git merge-base --is-ancestor "origin/$TGT" "$SHA" && \
+               ! git merge-base --is-ancestor "$SHA" "origin/$TGT"; then
+              echo "⚠️ Force resetting '$TGT' to tag SHA"
+              git checkout -B "$TGT" "$SHA"
+              git push --force -u origin "$TGT"
+              echo "✅ Force reset '$TGT' to tag"
+            else
+              echo "✅ Target branch '$TGT' already in correct state"
+            fi
           else
             echo "✅ Target branch '$TGT' already exists"
           fi
@@ -213,6 +238,7 @@ jobs:
       - name: Open PR via GitHub API
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}  # Use default token if repo settings allow
           script: |
             const owner = context.repo.owner;
             const repo  = context.repo.repo;
@@ -236,7 +262,7 @@ jobs:
             `;
 
             if (isNoop) {
-              body += `\n⚠️ **Note:** This is a no-op promotion. The target branch already contains this tag.This PR exists for audit trail purposes only.\n`;
+              body += `\n⚠️ **Note:** This is a no-op promotion. The target branch already contains this tag. This PR exists for audit trail purposes only.\n`;
             }
 
             body += `\n### Deployment Pipeline After merging, your deployment pipeline will deploy the contents of tag \`${tag}\` to the target environment.`;
