@@ -20,6 +20,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write  # Required for PR creation in some GitHub configurations
 
 jobs:
   prepare:
@@ -200,29 +201,37 @@ jobs:
           
           git fetch --all --tags
           
-          # ✅ Create promo branch FROM THE TAG (not from target)
-          # This ensures the branch contains exactly the tag content
-          git checkout -B "$PROMO_BRANCH" "$SHA"
-          
-          echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
-          
-          # Check if this is a no-op (tag already in target)
+          # Check if target branch exists and if tag is already in it
           if git rev-parse --verify "origin/$TGT" >/dev/null 2>&1; then
             if git merge-base --is-ancestor "$SHA" "origin/$TGT"; then
               echo "is_noop=true" >> "$GITHUB_OUTPUT"
-              echo "⚠️ Tag already exists in target - creating no-op promotion for tracking"
+              echo "⚠️ Tag already in target - creating no-op promotion"
+              
+              # Create promo branch from target to have a base for comparison
+              git checkout -B "$PROMO_BRANCH" "origin/$TGT"
+              
+              # Add empty commit to create PR-able diff
               git commit --allow-empty -m "chore(release): no-op promotion of $TAG to $TGT
 
               This promotion is a no-op because the target branch already contains this tag.
               Creating this PR for audit trail and tracking purposes."
+              
             else
               echo "is_noop=false" >> "$GITHUB_OUTPUT"
-              echo "✅ Clean promotion: target will be updated to tag $TAG"
+              echo "✅ Clean promotion: creating promo branch from tag"
+              
+              # ✅ Create promo branch FROM TAG for clean content
+              git checkout -B "$PROMO_BRANCH" "$SHA"
             fi
           else
             echo "is_noop=false" >> "$GITHUB_OUTPUT"
-            echo "✅ First-time promotion: creating target branch at tag $TAG"
+            echo "✅ First-time promotion: creating promo branch from tag"
+            
+            # First time promotion - branch from tag
+            git checkout -B "$PROMO_BRANCH" "$SHA"
           fi
+          
+          echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
           
           # Push the promo branch
           git push -f origin "$PROMO_BRANCH"
