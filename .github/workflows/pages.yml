@@ -3,7 +3,6 @@ name: pages build and deployment
 on:
   push:
     branches:
-      - develop
       - release/**
   workflow_dispatch:
 
@@ -17,6 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Build Stage for Artifact build
   build:
     runs-on: ubuntu-latest
     steps:
@@ -32,7 +32,7 @@ jobs:
         with:
           path: ./
 
-  # ✅ NEW: Manual approval gate
+  # Manual approval gate
   approve-deployment:
     needs: build
     runs-on: ubuntu-latest
@@ -42,6 +42,8 @@ jobs:
       - name: Waiting for approval
         run: echo "Deployment approved! Proceeding..."
 
+
+  # Deploy Stage once approved
   deploy:
     needs: approve-deployment  # Changed from 'build' to 'approve-deployment'
     runs-on: ubuntu-latest
