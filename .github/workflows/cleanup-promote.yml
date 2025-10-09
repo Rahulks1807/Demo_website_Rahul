@@ -12,8 +12,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Delete branch after merge
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      
+      - name: Delete promotion branch after merge
         run: |
           BRANCH="${{ github.event.pull_request.head.ref }}"
-          echo "Deleting $BRANCH"
+          echo "Deleting promotion branch: $BRANCH"
           git push origin --delete "$BRANCH"
+          echo "✅ Successfully deleted branch: $BRANCH"
