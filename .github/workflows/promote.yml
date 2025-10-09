@@ -223,11 +223,11 @@ jobs:
             # Add empty commit to create PR
             git commit --allow-empty -m "chore(release): no-op promotion of $TAG to $TGT
 
-This promotion is a no-op because the target branch already contains this tag.
-Creating this PR for audit trail and tracking purposes.
+            This promotion is a no-op because the target branch already contains this tag.
+            Creating this PR for audit trail and tracking purposes.
 
-Tag: $TAG
-Target: $TGT"
+            Tag: $TAG
+            Target: $TGT"
           else
             echo "✅ Creating promotion: resetting branch content to tag $TAG"
             
@@ -241,11 +241,12 @@ Target: $TGT"
               git commit --allow-empty -m "chore(release): promote $TAG to $TGT
 
 Promoting tag $TAG to $TGT.
-Content is already synchronized.
+              Promoting tag $TAG to $TGT.
+              Content is already synchronized.
 
-Tag: $TAG  
-SHA: $SHA
-Target: $TGT"
+              Tag: $TAG  
+              SHA: $SHA
+              Target: $TGT"
             fi
           fi
           
@@ -278,23 +279,23 @@ Target: $TGT"
             
             let body = `## 🚀 Release Promotion
             
-**Tag:** \`${tag}\`  
-**SHA:** \`${{ needs.prepare.outputs.SHA }}\`  
-**Source:** \`${{ needs.prepare.outputs.SOURCE }}\`  
-**Target:** \`${base}\`
+            **Tag:** \`${tag}\`  
+            **SHA:** \`${{ needs.prepare.outputs.SHA }}\`  
+            **Source:** \`${{ needs.prepare.outputs.SOURCE }}\`  
+            **Target:** \`${base}\`
 
-### What happens when this PR is merged:
-- The \`${base}\` branch will be updated to contain the exact code from tag \`${tag}\`
-- ${isNoop ? '⚠️ This is a **no-op promotion** - the target already contains this tag' : 'The branch will be reset to match the tag content exactly'}
-- Your deployment pipeline will deploy tag \`${tag}\` to the target environment
+            ### What happens when this PR is merged:
+            - The \`${base}\` branch will be updated to contain the exact code from tag \`${tag}\`
+            - ${isNoop ? '⚠️ This is a **no-op promotion** - the target already contains this tag' : 'The branch will be reset to match the tag content exactly'}
+            - Your deployment pipeline will deploy tag \`${tag}\` to the target environment
 
-### Merge Instructions:
-✅ **Use 'Create a merge commit'** or **'Rebase and merge'**  
-❌ **Do NOT use 'Squash and merge'** - this will lose the exact tag reference
+            ### Merge Instructions:
+            ✅ **Use 'Create a merge commit'** or **'Rebase and merge'**  
+            ❌ **Do NOT use 'Squash and merge'** - this will lose the exact tag reference
 
-### Post-Merge:
-After merging, \`${base}\` will point to the exact content of tag \`${tag}\`.
-`;
+            ### Post-Merge:
+            After merging, \`${base}\` will point to the exact content of tag \`${tag}\`.
+            `;
 
             try {
               const { data: pr } = await github.rest.pulls.create({
