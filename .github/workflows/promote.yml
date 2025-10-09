@@ -6,16 +6,19 @@ on:
       tag:
         description: "Existing SemVer tag (e.g., 1.2.3)"
         required: true
+        type: string
       target_env:
         description: "Promotion target"
         type: choice
-        options: [uat, psup, prod]
+        options: 
+          - uat
+          - psup
+          - prod
         required: true
       force_reset:
         description: "Force reset target branch if diverged (DANGEROUS)"
         type: boolean
         default: false
-        required: false
 
 permissions:
   contents: write
