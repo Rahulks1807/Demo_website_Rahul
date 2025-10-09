@@ -240,7 +240,6 @@ jobs:
               echo "Content already matches tag, creating tracking commit"
               git commit --allow-empty -m "chore(release): promote $TAG to $TGT
 
-Promoting tag $TAG to $TGT.
               Promoting tag $TAG to $TGT.
               Content is already synchronized.
 
