@@ -325,5 +325,332 @@ jobs:
                 core.setFailed(`PR create failed: ${e.message}`);
               }
             }
+=========
+promote.yaml:
 
+name: Promote Release via PR (Clean Tag Promotion)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing SemVer tag (e.g., 1.2.3)"
+        required: true
+      target_env:
+        description: "Promotion target"
+        type: choice
+        options: [uat, psup, prod]
+        required: true
+      force_reset:
+        description: "Force reset target branch if diverged (DANGEROUS)"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write  # Required for PR creation in some GitHub configurations
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      TAG: ${{ steps.out.outputs.TAG }}
+      SHA: ${{ steps.out.outputs.SHA }}
+      SOURCE: ${{ steps.out.outputs.SOURCE }}
+      TARGET: ${{ steps.out.outputs.TARGET }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: git fetch --all --tags
+
+      - name: Validate SemVer tag & resolve SHA
+        id: res
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag format '$TAG'. Use MAJOR.MINOR.PATCH." >&2; exit 1
+          fi
+          if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag not found: $TAG" >&2; exit 1
+          fi
+          echo "sha=$(git rev-parse "refs/tags/$TAG^{commit}")" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Map env -> branches
+        id: map
+        shell: bash
+        run: |
+          case "${{ github.event.inputs.target_env }}" in
+            uat)  echo "src=develop"       >> "$GITHUB_OUTPUT"; echo "tgt=release/uat"  >> "$GITHUB_OUTPUT" ;;
+            psup) echo "src=release/uat"   >> "$GITHUB_OUTPUT"; echo "tgt=release/psup" >> "$GITHUB_OUTPUT" ;;
+            prod) echo "src=release/psup"  >> "$GITHUB_OUTPUT"; echo "tgt=release/prod" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Set composite outputs
+        id: out
+        run: |
+          echo "TAG=${{ steps.res.outputs.tag }}"   >> "$GITHUB_OUTPUT"
+          echo "SHA=${{ steps.res.outputs.sha }}"   >> "$GITHUB_OUTPUT"
+          echo "SOURCE=${{ steps.map.outputs.src }}" >> "$GITHUB_OUTPUT"
+          echo "TARGET=${{ steps.map.outputs.tgt }}" >> "$GITHUB_OUTPUT"
+
+  verify-ancestry:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: git fetch --all --tags
+      
+      - name: Ensure tag commit exists in predecessor branch
+        shell: bash
+        run: |
+          SRC="${{ needs.prepare.outputs.SOURCE }}"
+          SHA="${{ needs.prepare.outputs.SHA }}"
+          git rev-parse --verify "origin/$SRC" >/dev/null 2>&1 || { echo "Missing branch $SRC"; exit 1; }
+          git merge-base --is-ancestor "$SHA" "origin/$SRC" || {
+            echo "❌ Tag commit is not in '$SRC'. You must promote in order." >&2
+            echo "Tag must exist in: develop → release/uat → release/psup → release/prod" >&2
+            exit 1
+          }
+          echo "✅ Tag exists in predecessor branch '$SRC'"
+
+  verify-no-divergence:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: git fetch --all --tags
+      
+      - name: Check if target branch has diverged from tag history
+        shell: bash
+        run: |
+          TGT="${{ needs.prepare.outputs.TARGET }}"
+          SHA="${{ needs.prepare.outputs.SHA }}"
+          FORCE="${{ github.event.inputs.force_reset }}"
+          
+          # Check if target branch exists
+          if ! git rev-parse --verify "origin/$TGT" >/dev/null 2>&1; then
+            echo "✅ Target branch '$TGT' doesn't exist yet - will be created"
+            exit 0
+          fi
+          
+          # Check if target is already at or behind the tag (safe to fast-forward)
+          if git merge-base --is-ancestor "origin/$TGT" "$SHA"; then
+            echo "✅ Target branch '$TGT' can be cleanly fast-forwarded to tag"
+            exit 0
+          fi
+          
+          # Check if tag is behind target (already promoted)
+          if git merge-base --is-ancestor "$SHA" "origin/$TGT"; then
+            echo "⚠️ Target branch '$TGT' already contains this tag"
+            echo "This is a no-op promotion, but PR will be created for tracking"
+            exit 0
+          fi
+          
+          # If we get here, branches have diverged
+          if [[ "$FORCE" == "true" ]]; then
+            echo "⚠️ Target branch '$TGT' has diverged, but force_reset is enabled"
+            echo "Target will be RESET to tag (existing commits will be lost)"
+            exit 0
+          fi
+          
+          echo "❌ Target branch '$TGT' has diverged from tag history!" >&2
+          echo "" >&2
+          echo "Target branch contains commits not in the tag." >&2
+          echo "Release branches should only contain promoted tags." >&2
+          echo "" >&2
+          echo "To fix this, you can:" >&2
+          echo "1. Reset '$TGT' manually: git reset --hard refs/tags/${{ needs.prepare.outputs.TAG }} && git push --force" >&2
+          echo "2. Create a new tag that includes the divergent commits" >&2
+          echo "3. Re-run this workflow with 'force_reset' enabled (DANGEROUS)" >&2
+          exit 1
+
+  ensure-target:
+    runs-on: ubuntu-latest
+    needs: [prepare, verify-ancestry, verify-no-divergence]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: git fetch --all --tags
+      
+      - name: Create target from tag if missing (or force reset if diverged)
+        shell: bash
+        run: |
+          TGT="${{ needs.prepare.outputs.TARGET }}"
+          SHA="${{ needs.prepare.outputs.SHA }}"
+          FORCE="${{ github.event.inputs.force_reset }}"
+          
+          if ! git rev-parse --verify "origin/$TGT" >/dev/null 2>&1; then
+            echo "Creating $TGT from tag SHA"
+            git checkout -b "$TGT" "$SHA"
+            git push -u origin "$TGT"
+            echo "✅ Created '$TGT' pointing to tag"
+          elif [[ "$FORCE" == "true" ]]; then
+            # Check if force reset is needed (branch has diverged)
+            if ! git merge-base --is-ancestor "origin/$TGT" "$SHA" && \
+               ! git merge-base --is-ancestor "$SHA" "origin/$TGT"; then
+              echo "⚠️ Force resetting '$TGT' to tag SHA"
+              git checkout -B "$TGT" "$SHA"
+              git push --force -u origin "$TGT"
+              echo "✅ Force reset '$TGT' to tag"
+            else
+              echo "✅ Target branch '$TGT' already in correct state"
+            fi
+          else
+            echo "✅ Target branch '$TGT' already exists"
+          fi
+
+  create-promo-branch:
+    runs-on: ubuntu-latest
+    needs: [prepare, verify-ancestry, verify-no-divergence, ensure-target]
+    outputs:
+      BRANCH: ${{ steps.mk.outputs.branch }}
+      IS_NOOP: ${{ steps.mk.outputs.is_noop }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Configure git author
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create promo branch from tag (clean promotion)
+        id: mk
+        shell: bash
+        run: |
+          TGT="${{ needs.prepare.outputs.TARGET }}"
+          TAG="${{ needs.prepare.outputs.TAG }}"
+          SHA="${{ needs.prepare.outputs.SHA }}"
+          PROMO_BRANCH="promote/${TAG}-to-${TGT//\//-}"
+          
+          git fetch --all --tags
+          
+          # Check if target branch exists and if tag is already in it
+          if git rev-parse --verify "origin/$TGT" >/dev/null 2>&1; then
+            if git merge-base --is-ancestor "$SHA" "origin/$TGT"; then
+              echo "is_noop=true" >> "$GITHUB_OUTPUT"
+              echo "⚠️ Tag already in target - creating no-op promotion"
+              
+              # Create promo branch from target to have a base for comparison
+              git checkout -B "$PROMO_BRANCH" "origin/$TGT"
+              
+              # Add empty commit to create PR-able diff
+              git commit --allow-empty -m "chore(release): no-op promotion of $TAG to $TGT
+
+              This promotion is a no-op because the target branch already contains this tag.
+              Creating this PR for audit trail and tracking purposes."
+              
+            else
+              echo "is_noop=false" >> "$GITHUB_OUTPUT"
+              echo "✅ Clean promotion: creating promo branch from tag"
+              
+              # ✅ Create promo branch FROM TAG for clean content
+              git checkout -B "$PROMO_BRANCH" "$SHA"
+            fi
+          else
+            echo "is_noop=false" >> "$GITHUB_OUTPUT"
+            echo "✅ First-time promotion: creating promo branch from tag"
+            
+            # First time promotion - branch from tag
+            git checkout -B "$PROMO_BRANCH" "$SHA"
+          fi
+          
+          echo "branch=$PROMO_BRANCH" >> "$GITHUB_OUTPUT"
+          
+          # Push the promo branch
+          git push -f origin "$PROMO_BRANCH"
+          echo "✅ Pushed promotion branch: $PROMO_BRANCH"
+
+  open-pr:
+    runs-on: ubuntu-latest
+    needs: [prepare, create-promo-branch]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Open PR via GitHub API
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}  # Use default token if repo settings allow
+          script: |
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const head  = '${{ needs.create-promo-branch.outputs.BRANCH }}';
+            const base  = '${{ needs.prepare.outputs.TARGET }}';
+            const tag   = '${{ needs.prepare.outputs.TAG }}';
+            const isNoop = '${{ needs.create-promo-branch.outputs.IS_NOOP }}' === 'true';
+            
+            const title = `Promote ${tag} → ${base}`;
+            
+            let body = `## 🚀 Release Promotion
+            
+            **Tag:** \`${tag}\`
+            **Source:** \`${{ needs.prepare.outputs.SOURCE }}\`
+            **Target:** \`${base}\`
+
+            ### What happens when this PR is merged:
+            - The \`${base}\` branch will point to **exactly** the code in tag \`${tag}\`
+            - No merge commits or additional changes will be added
+            - This ensures \`${base}\` contains the exact promoted release
+            `;
+
+            if (isNoop) {
+              body += `\n⚠️ **Note:** This is a no-op promotion. The target branch already contains this tag. This PR exists for audit trail purposes only.\n`;
+            }
+
+            body += `\n### Deployment Pipeline After merging, your deployment pipeline will deploy the contents of tag \`${tag}\` to the target environment.`;
+
+            try {
+              const { data: pr } = await github.rest.pulls.create({
+                owner, repo, head, base, title, body,
+                maintainer_can_modify: true, 
+                draft: false
+              });
+              
+              core.info(`✅ PR created: ${pr.html_url}`);
+              core.summary.addRaw(`### ✅ Promotion PR Created\n\n**PR:** ${pr.html_url}\n**Tag:** ${tag}\n**Target:** ${base}`);
+              await core.summary.write();
+              
+            } catch (e) {
+              if (e.status === 422) {
+                // Check if PR already exists
+                const { data: prs } = await github.rest.pulls.list({
+                  owner, repo, state: 'open', head: `${owner}:${head}`, base
+                });
+                
+                if (prs.length > 0) {
+                  core.info(`ℹ️ PR already exists: ${prs[0].html_url}`);
+                  core.summary.addRaw(`### ℹ️ Promotion PR Already Exists\n\n**PR:** ${prs[0].html_url}\n**Tag:** ${tag}\n**Target:** ${base}`);
+                  await core.summary.write();
+                } else {
+                  core.setFailed(`Could not create or find PR. This might mean there are no differences between branches. Details: ${e.message}`);
+                }
+              } else {
+                core.setFailed(`PR creation failed: ${e.message}`);
+              }
+            }
+
+  merge-instructions:
+    runs-on: ubuntu-latest
+    needs: [prepare, open-pr]
+    steps:
+      - name: Provide merge instructions
+        run: |
+          echo "# 📋 Promotion Instructions" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## What to do next:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review the promotion PR" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Important:** Use **'Create a merge commit'** or **'Rebase and merge'** strategy" >> $GITHUB_STEP_SUMMARY
+          echo "3. **Do NOT use 'Squash and merge'** - this will lose the exact tag reference" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## After merge:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ needs.prepare.outputs.TARGET }}\` will point to tag \`${{ needs.prepare.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Your deployment pipeline will deploy the exact tag content" >> $GITHUB_STEP_SUMMARY
+          echo "- The promotion branch will be auto-deleted by cleanup workflow" >> $GITHUB_STEP_SUMMARY
 
